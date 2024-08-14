@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BRICS Voting Mini App</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+    <div id="app">
+        <h1>BRICS Voting Mini App</h1>
+        <div id="user-info"></div>
+        <div id="voting-section"></div>
+        <div id="history-section"></div>
+    </div>
+
+    <script>
+        const tgApp = window.Telegram.WebApp;
+        const backendUrl = 'https://your-backend-url.com'; // Замените на URL вашего сервера
+
+        // Инициализация приложения
+        tgApp.ready();
+
+        // Получение информации о пользователе
+        const user = tgApp.initDataUnsafe.user;
+
+        // Регистрация пользователя
+        async function registerUser() {
+            const response = await fetch(`${backendUrl}/register`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: user.id, name: user.first_name })
+            });
+            const data = await response.json();
+            if (data.success) {
+                document.getElementById('user-info').innerHTML = `Welcome, ${data.user.name}!`;
+            }
+        }
+
+        // Функция для голосования
+        async function vote(sessionIndex, optionIndex) {
+            const response = await fetch(`${backendUrl}/vote`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId: user.id, sessionIndex, optionIndex })
+            });
+            const data = await response.json();
+            if (data.success) {
+                alert('Vote recorded!');
+            }
+        }
+
+        // Функция для получения истории игр
+        async function getHistory() {
+            const response = await fetch(`${backendUrl}/user-history/${user.id}`);
+            const data = await response.json();
+            if (data.success) {
+                const historyHtml = data.history.map(game => `
+                    <div>
+                        <h3>${game.title}</h3>
+                        <p>Date: ${new Date(game.date).toLocaleDateString()}</p>
+                        <ul>
+                            ${game.results.map(result => `
+                                <li>${result.option}: ${result.count} votes</li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                `).join('');
+                document.getElementById('history-section').innerHTML = historyHtml;
+            }
+        }
+
+        // Инициализация приложения
+        registerUser();
+        getHistory();
+    </script>
+</body>
+</html>
