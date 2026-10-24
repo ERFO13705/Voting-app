@@ -25,6 +25,14 @@ echo Сейчас откроется окно браузера. Не закры�
 echo Если появится капча, решите её в окне браузера и нажмите Enter в этом чёрном окне.
 echo Остановить: Ctrl+C. Потом можно запустить снова — продолжит с того же места.
 echo.
+echo Быстрая самопроверка (1-2 минуты)...
+python -m sergiev_food check
+if errorlevel 1 (
+  echo.
+  echo Самопроверка не прошла. Пришлите мне текст из этого окна и папку data\debug.
+  choice /m "Всё равно продолжить полный прогон"
+  if errorlevel 2 exit /b 1
+)
 python -m sergiev_food browse
 echo.
 if exist data\ranking.csv start "" data

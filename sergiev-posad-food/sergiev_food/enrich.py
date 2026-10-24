@@ -29,15 +29,20 @@ class CaptchaError(RuntimeError):
     pass
 
 
+class FetchError(RuntimeError):
+    """Страницу не удалось загрузить (таймаут и т.п.); организация пропускается до следующего запуска."""
+
+
 def _walk(node):
+    """Обход JSON в порядке документа (родитель раньше детей)."""
     stack = [node]
     while stack:
         n = stack.pop()
         if isinstance(n, dict):
             yield n
-            stack.extend(n.values())
+            stack.extend(reversed(list(n.values())))
         elif isinstance(n, list):
-            stack.extend(n)
+            stack.extend(reversed(n))
 
 
 def _num(value, cast):
@@ -103,21 +108,25 @@ def _parse_json(html, org_id):
     except ValueError:
         return out
 
-    # В state есть и соседние организации; берём блок, чей id совпадает с нужным.
-    exact = loose = None
+    # В state есть и соседние организации. Приоритет: совпал id -> совпало название -> первый блок.
+    page_name = title.split(",")[0].strip().casefold()
+    exact = by_name = loose = None
     for d in _walk(state):
         if "ratingData" in d or "ratingValue" in d:
             ident = str(d.get("id") or d.get("permalink") or "")
             if ident == org_id:
                 exact = d
                 break
+            name = str(d.get("title") or d.get("name") or "").strip().casefold()
+            if page_name and name == page_name:
+                by_name = by_name or d
             loose = loose or d
-    block = exact or loose
+    block = exact or by_name or loose
     if block is None:
         # рейтинга нет (новое заведение) — статус всё равно определим по заголовку
         out["status"] = _status_from(title, None)
         return out
-    out["match"] = "exact" if exact else "loose"
+    out["match"] = "exact" if exact else "name" if by_name else "loose"
 
     rd = block.get("ratingData") if isinstance(block.get("ratingData"), dict) else block
     out["rating"] = _num(rd.get("ratingValue"), float)
@@ -161,11 +170,16 @@ def fetch_org_page(org_id, timeout=30):
 
 
 def enrich(places, delay=5.0, limit=None, force=False, dump_dir=None, log=print,
-           fetch=fetch_org_page, save=None, sleep=time.sleep):
-    """Дополняет записи in-place. save() вызывается после каждой организации."""
+           fetch=fetch_org_page, save=None, sleep=time.sleep, abort_unparsed=6):
+    """Дополняет записи in-place. save() вызывается после каждой организации.
+
+    Возвращает False, если сбор прерван (капча или подряд `abort_unparsed` страниц,
+    из которых ничего не разобрано — значит, вёрстка Яндекса не та, что ожидается).
+    """
     todo = [p for p in places.values() if force or not p.get("enriched_at")]
     if limit:
         todo = todo[:limit]
+    unparsed = failed = 0
     for i, place in enumerate(todo, 1):
         try:
             html = fetch(place["id"])
@@ -173,21 +187,34 @@ def enrich(places, delay=5.0, limit=None, force=False, dump_dir=None, log=print,
             log(f"[enrich] остановка: {e}. Прогресс сохранён, повторите запуск позже "
                 f"(или с другого IP/через паузу).")
             return False
+        except FetchError as e:
+            failed += 1
+            log(f"[enrich] {i}/{len(todo)} пропущено ({e}); будет повторено при следующем запуске")
+            sleep(delay)
+            continue
         if html is None:
             place.update(status="removed", rating=None, rating_count=None, review_count=None)
         else:
             info = parse_org_page(html, place["id"])
+            unparsed = unparsed + 1 if info["match"] == "none" else 0
             if info["match"] != "exact" and dump_dir:
                 _dump(dump_dir, place["id"], html)
             _fill_from_title(place, info["title"])
             place.update({k: info[k] for k in ("rating", "rating_count", "review_count", "status")})
             place["parse_match"] = info["match"]
-        place["enriched_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if place.get("parse_match") != "none":  # неразобранные страницы будут перезапрошены
+            place["enriched_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         if save:
             save()
         log(f"[enrich] {i}/{len(todo)} {place['name'] or place['id']}: "
             f"{place['status']} {place.get('rating')} ({place.get('rating_count')})")
+        if unparsed >= abort_unparsed:
+            log(f"[enrich] ОСТАНОВКА: {unparsed} страниц подряд не удалось разобрать — вёрстка Яндекса, "
+                f"видимо, отличается от ожидаемой. Запустите с --dump-dir debug и пришлите папку debug.")
+            return False
         sleep(delay * random.uniform(0.7, 1.4))
+    if failed:
+        log(f"[enrich] не загружено страниц: {failed} — запустите ещё раз, они будут добраны")
     return True
 
 
@@ -200,8 +227,8 @@ def _fill_from_title(place, title):
     if not place.get("address") and len(parts) > 2:
         place["categories"] = place.get("categories") or [parts[1]]
         place["address"] = ", ".join(parts[2:])
-    if title and not CITY_RE.search(title + " " + place.get("address", "")):
-        place["out_of_city"] = True
+    if title:
+        place["out_of_city"] = not CITY_RE.search(title + " " + place.get("address", ""))
 
 
 def _dump(dump_dir, org_id, html):

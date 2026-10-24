@@ -39,7 +39,7 @@ def rank(places, m=10):
 COLUMNS = [("rank", "№"), ("name", "Название"), ("status_ru", "Статус"), ("rating", "Рейтинг"),
            ("rating_count", "Оценок"), ("review_count", "Отзывов"), ("score", "Взвеш. балл"),
            ("categories_s", "Категории"), ("address", "Адрес"), ("phones_s", "Телефон"),
-           ("hours", "Часы"), ("url", "Яндекс Карты")]
+           ("hours", "Часы"), ("url", "Яндекс Карты"), ("parse_match", "Достоверность разбора")]
 
 
 def _rows(items):

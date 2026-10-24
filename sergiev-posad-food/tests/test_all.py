@@ -117,6 +117,59 @@ class Enrich(unittest.TestCase):
         self.assertEqual(len(saves), 2)
 
 
+class Guards(unittest.TestCase):
+    def test_enrich_aborts_when_nothing_parses(self):
+        places = {str(i): {"id": str(i), "name": f"К{i}"} for i in range(20)}
+        calls = []
+        done = e.enrich(places, fetch=lambda oid: calls.append(oid) or "<html></html>",
+                        sleep=lambda *_: None, log=lambda *_: None, abort_unparsed=6)
+        self.assertFalse(done)
+        self.assertEqual(len(calls), 6)  # не тратим время на остальные
+        self.assertFalse(any("enriched_at" in p for p in places.values()))  # перезапросятся после починки
+
+    def test_enrich_skips_failed_fetch_and_continues(self):
+        places = {"1": {"id": "1", "name": "А"}, "2": {"id": "2", "name": "Б"}}
+
+        def fetch(oid):
+            if oid == "1":
+                raise e.FetchError("timeout")
+            return page("2", 4.1, 9, 2)
+
+        self.assertTrue(e.enrich(places, fetch=fetch, sleep=lambda *_: None, log=lambda *_: None))
+        self.assertNotIn("enriched_at", places["1"])
+        self.assertEqual(places["2"]["rating"], 4.1)
+
+    def test_name_match_beats_neighbour(self):
+        state = {"list": [{"id": "9", "title": "Сосед", "ratingData": {"ratingValue": 1.0, "ratingCount": 1}},
+                          {"id": "x", "title": "Кафе Роза", "ratingData": {"ratingValue": 4.8, "ratingCount": 60}}]}
+        html = ('<title>Кафе Роза, кафе, ул. А, 1, Сергиев Посад — Яндекс Карты</title>'
+                f'<script class="state-view">{json.dumps(state, ensure_ascii=False)}</script>')
+        info = e.parse_org_page(html, "777")
+        self.assertEqual((info["rating"], info["match"]), (4.8, "name"))
+
+    def test_discover_stops_on_empty_results(self):
+        from sergiev_food import browser as br
+
+        class Fake:
+            calls = 0
+            def search(self, q):
+                Fake.calls += 1
+                return set()
+            def _pause(self, *a):
+                pass
+
+        ok = br.browse_discover(Fake(), {}, [], lambda: None, log=lambda *_: None)
+        self.assertFalse(ok)
+        self.assertEqual(Fake.calls, 3)
+
+    def test_headless_captcha_raises(self):
+        from sergiev_food import browser as br
+        b = br.YandexBrowser("x", headless=True, log=lambda *_: None)
+        b._is_captcha = lambda: True
+        with self.assertRaises(e.CaptchaError):
+            b._wait_captcha()
+
+
 class Rank(unittest.TestCase):
     def test_order(self):
         P = lambda i, rating, n, status="open": {"id": i, "name": i, "rating": rating, "rating_count": n, "status": status,
