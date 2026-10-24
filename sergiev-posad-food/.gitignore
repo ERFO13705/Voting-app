@@ -1,0 +1,4 @@
+data/
+debug/
+__pycache__/
+*.pyc
