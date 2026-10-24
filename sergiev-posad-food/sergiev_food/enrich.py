@@ -52,7 +52,43 @@ def _has(text, markers):
     return any(m in text for m in markers)
 
 
+def _visible_text(html):
+    html = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.S | re.I)
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html)).replace("\xa0", " ")
+
+
+RATING_TEXT_RE = re.compile(r"(\d[.,]\d)\s+(\d[\d ]*?)\s*оцен")
+REVIEW_TEXT_RE = re.compile(r"(\d[\d ]*?)\s*отзыв")
+
+
+def _parse_text(html, out):
+    """Запасной разбор по видимому тексту (если нет state-view JSON)."""
+    text = _visible_text(html)[:6000]
+    m = RATING_TEXT_RE.search(text)
+    if m:
+        out["rating"] = _num(m.group(1), float)
+        out["rating_count"] = _num(m.group(2).replace(" ", ""), int)
+        r = REVIEW_TEXT_RE.search(text)
+        out["review_count"] = _num(r.group(1).replace(" ", ""), int) if r else None
+    if _has(text, PERMANENT_MARKERS):
+        out["status"] = "permanently_closed"
+    elif _has(text, TEMPORARY_MARKERS):
+        out["status"] = "temporarily_closed"
+    elif m:
+        out["status"] = "open"
+    if m or out["status"] != "unknown":
+        out["match"] = "text"
+    return out
+
+
 def parse_org_page(html, org_id):
+    out = _parse_json(html, org_id)
+    if out["match"] == "none":
+        out = _parse_text(html, out)
+    return out
+
+
+def _parse_json(html, org_id):
     """-> {rating, rating_count, review_count, status, title, match}."""
     title_m = TITLE_RE.search(html)
     title = re.sub(r"\s+", " ", title_m.group(1)).strip() if title_m else ""
@@ -141,10 +177,9 @@ def enrich(places, delay=5.0, limit=None, force=False, dump_dir=None, log=print,
             place.update(status="removed", rating=None, rating_count=None, review_count=None)
         else:
             info = parse_org_page(html, place["id"])
-            if info["match"] == "none" and dump_dir:
+            if info["match"] != "exact" and dump_dir:
                 _dump(dump_dir, place["id"], html)
-            if not place.get("name") and info["title"]:
-                place["name"] = info["title"].split(",")[0]
+            _fill_from_title(place, info["title"])
             place.update({k: info[k] for k in ("rating", "rating_count", "review_count", "status")})
             place["parse_match"] = info["match"]
         place["enriched_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -154,6 +189,19 @@ def enrich(places, delay=5.0, limit=None, force=False, dump_dir=None, log=print,
             f"{place['status']} {place.get('rating')} ({place.get('rating_count')})")
         sleep(delay * random.uniform(0.7, 1.4))
     return True
+
+
+def _fill_from_title(place, title):
+    """Заголовок вида «Название, категория, адрес — Яндекс Карты» -> название/категория/адрес."""
+    from .discover import CITY_RE
+    parts = [x.strip() for x in re.sub(r"\s+[—-]\s+Яндекс.*$", "", title).split(",")]
+    if not place.get("name") and parts and parts[0]:
+        place["name"] = parts[0]
+    if not place.get("address") and len(parts) > 2:
+        place["categories"] = place.get("categories") or [parts[1]]
+        place["address"] = ", ".join(parts[2:])
+    if title and not CITY_RE.search(title + " " + place.get("address", "")):
+        place["out_of_city"] = True
 
 
 def _dump(dump_dir, org_id, html):

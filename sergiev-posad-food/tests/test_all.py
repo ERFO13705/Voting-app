@@ -78,6 +78,24 @@ class Enrich(unittest.TestCase):
         self.assertEqual(e.parse_org_page(page("1", 4.0, 5, 1, extra="Закрыто навсегда"), "1")["status"], "permanently_closed")
         self.assertEqual(e.parse_org_page(page("1", 4.0, 5, 1, extra="Временно закрыто"), "1")["status"], "temporarily_closed")
 
+    def test_text_fallback_without_state_json(self):
+        html = ("<html><head><title>Пекарня, пекарня, ул. А, 1, Сергиев Посад — Яндекс Карты</title></head>"
+                "<body><div>4,7</div><div>1 250 оценок</div><div>312 отзывов</div><script>var x=1</script></body></html>")
+        info = e.parse_org_page(html, "1")
+        self.assertEqual((info["rating"], info["rating_count"], info["review_count"], info["status"], info["match"]),
+                         (4.7, 1250, 312, "open", "text"))
+        closed = e.parse_org_page("<body>Закрыто навсегда</body>", "1")
+        self.assertEqual(closed["status"], "permanently_closed")
+
+    def test_title_fills_name_and_city_flag(self):
+        pl = {"1": {"id": "1", "name": ""}, "2": {"id": "2", "name": ""}}
+        pages = {"1": page("1", 4.0, 5, 1, title="Кафе Роза, кафе, ул. А, 1, Сергиев Посад — Яндекс Карты"),
+                 "2": page("2", 4.0, 5, 1, title="Кафе Ива, кафе, ул. Б, 2, Хотьково — Яндекс Карты")}
+        e.enrich(pl, fetch=pages.get, sleep=lambda *_: None, log=lambda *_: None)
+        self.assertEqual(pl["1"]["name"], "Кафе Роза")
+        self.assertFalse(pl["1"].get("out_of_city"))
+        self.assertTrue(pl["2"]["out_of_city"])
+
     def test_garbage_page(self):
         self.assertEqual(e.parse_org_page("<html></html>", "1")["status"], "unknown")
 
